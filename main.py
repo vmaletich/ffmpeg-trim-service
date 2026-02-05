@@ -11,16 +11,19 @@ from pydantic import BaseModel, Field
 
 app = FastAPI(title="FFmpeg Trim Service")
 
-# --- Старый вариант (на будущее). Можно оставить, не мешает ---
+
+# --- Variant via URL (kept for convenience) ---
 class TrimRequest(BaseModel):
     audio_url: str
     start: float = Field(ge=0)
     end: float = Field(gt=0)
     scene_index: Optional[int] = None
 
+
 @app.get("/health")
 def health():
     return {"ok": True}
+
 
 @app.post("/trim")
 async def trim(req: TrimRequest):
@@ -32,6 +35,7 @@ async def trim(req: TrimRequest):
     out_name = f"scene_{req.scene_index if req.scene_index is not None else uuid.uuid4().hex}.mp3"
     out_path = os.path.join(workdir, out_name)
 
+    # 1) download audio
     try:
         async with httpx.AsyncClient(timeout=60) as client:
             r = await client.get(req.audio_url, follow_redirects=True)
@@ -41,11 +45,13 @@ async def trim(req: TrimRequest):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"failed to download audio_url: {e}")
 
+    # 2) trim (more predictable: -ss + -t)
+    duration = req.end - req.start
     cmd = [
         "ffmpeg", "-y",
-        "-i", in_path,
         "-ss", str(req.start),
-        "-to", str(req.end),
+        "-i", in_path,
+        "-t", str(duration),
         "-vn",
         "-acodec", "libmp3lame",
         "-b:a", "128k",
@@ -57,7 +63,8 @@ async def trim(req: TrimRequest):
 
     return FileResponse(out_path, media_type="audio/mpeg", filename=out_name)
 
-# --- Вариант A: принимаем файл напрямую (то, что тебе нужно) ---
+
+# --- Variant A: upload file directly (what you use from Make) ---
 @app.post("/trim_upload")
 async def trim_upload(
     file: UploadFile = File(...),
@@ -73,17 +80,18 @@ async def trim_upload(
     out_name = f"scene_{scene_index if scene_index is not None else uuid.uuid4().hex}.mp3"
     out_path = os.path.join(workdir, out_name)
 
-    # Save uploaded file
+    # 1) save uploaded file
     with open(in_path, "wb") as f:
         content = await file.read()
         f.write(content)
 
-    # Trim with ffmpeg
+    # 2) trim (more predictable: -ss + -t)
+    duration = end - start
     cmd = [
         "ffmpeg", "-y",
-        "-i", in_path,
         "-ss", str(start),
-        "-to", str(end),
+        "-i", in_path,
+        "-t", str(duration),
         "-vn",
         "-acodec", "libmp3lame",
         "-b:a", "128k",
